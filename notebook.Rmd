@@ -14,7 +14,7 @@ output: html_document
 
 packages <- c("rvest", "xml2", "dplyr", "purrr", "stringr",
               "rmarkdown", "knitr", "xml2", "data.table", "httr",
-              "leaflet")
+              "leaflet", "geojsonsf", "jsonlite")
 
 install_if_missing <- function(pkg) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
@@ -46,6 +46,31 @@ leaflet() %>%
   setView(lng = -157.858333, lat = 21.306944, zoom = 10) %>%
   # Add a marker for a specific location (Honolulu)
   addMarkers(lng = -157.858333, lat = 21.306944, popup = "Aloha from Honolulu! 🌺")
+
+```
+
+```{r leaf-ahupuaa-map}
+
+# or use sf package: library(sf)
+
+# Read GeoJSON as text
+geojson_data <- readLines("data/Ahupuaa.geojson") %>% 
+  paste(collapse = "\n")
+
+# Create map with addGeoJSON
+map <- leaflet() %>%
+  addTiles() %>%
+  setView(lng = -157.8583, lat = 20.9078, zoom = 7) %>%
+  addGeoJSON(
+    geojson = geojson_data,
+    fillColor = "blue",
+    fillOpacity = 0.3,
+    color = "#444444",
+    weight = 2,
+    opacity = 0.8
+  )
+
+map
 
 ```
 
@@ -273,7 +298,7 @@ extract_bold_fields <- function(url) {
 detail_urls <- final_dt$URL
 
 # Scrape all detail pages (limit for demo, e.g. first 10)
-detail_data <- purrr::map(detail_urls[1:10], extract_bold_fields)
+detail_data <- purrr::map(detail_urls[1:100], extract_bold_fields)
 
 # Convert to data.frame
 details_df <- rbindlist(detail_data, fill=TRUE)
