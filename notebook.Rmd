@@ -14,7 +14,7 @@ output: html_document
 
 packages <- c("rvest", "xml2", "dplyr", "purrr", "stringr",
               "rmarkdown", "knitr", "xml2", "data.table", "httr",
-              "leaflet", "geojsonsf", "jsonlite")
+              "leaflet", "geojsonsf", "jsonlite", "sf")
 
 install_if_missing <- function(pkg) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
@@ -51,24 +51,56 @@ leaflet() %>%
 
 ```{r leaf-ahupuaa-map}
 
-# or use sf package: library(sf)
 
-# Read GeoJSON as text
-geojson_data <- readLines("data/Ahupuaa.geojson") %>% 
-  paste(collapse = "\n")
+# Read GeoJSON as sf object
+ahupuaa_data <- st_read("data/Ahupuaa.geojson")
+raingauge_data <- st_read("data/Rain_Gauges.geojson")
 
-# Create map with addGeoJSON
+# Calculate centroids for labeling
+centroids <- st_centroid(ahupuaa_data)
+
+# Create map
 map <- leaflet() %>%
   addTiles() %>%
-  setView(lng = -157.8583, lat = 20.9078, zoom = 7) %>%
-  addGeoJSON(
-    geojson = geojson_data,
-    fillColor = "blue",
+  setView(lng = -157.8583, lat = 20.9078, zoom = 7)
+
+# Add ahupuaa polygons
+map <- map %>%
+  addPolygons(
+    data = ahupuaa_data,
+    fillColor = "lightblue",
     fillOpacity = 0.3,
-    color = "#444444",
+    color = "red",
     weight = 2,
-    opacity = 0.8
   )
+
+# Add markers at centroids
+map <- map %>%
+  addMarkers(
+    data = centroids,
+    popup = ~paste0(
+      "<h3>", ahupuaa, "</h3>",
+      "<p><strong>Moku:</strong> ", moku, "</p>",
+      "<p><strong>Mokupuni:</strong> ", mokupuni, "</p>",
+      "<p><strong>Area:</strong> ", gisacres, " ac</p>"
+    ),
+    label = ~ahupuaa
+  )
+# Add raingauge circle markers
+map <- map %>%
+  addCircleMarkers(
+    data = raingauge_data,
+    group = "Raingauges",
+    radius = 8,
+    fillColor = "blue",
+    color = "white",
+    weight = 2,
+    fillOpacity = 0.8,
+    popup = ~paste0(
+      "<h3>", name, "</h3>",
+      "<p><strong>Elevation:</strong> ", elevft, "</p>",
+      "<p>", stationsta, "</p>"
+    ))
 
 map
 
