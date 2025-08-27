@@ -330,7 +330,7 @@ extract_bold_fields <- function(url) {
 detail_urls <- final_dt$URL
 
 # Scrape all detail pages (limit for demo, e.g. first 10)
-detail_data <- purrr::map(detail_urls[1:100], extract_bold_fields)
+detail_data <- purrr::map(detail_urls, extract_bold_fields)
 
 # Convert to data.frame
 details_df <- rbindlist(detail_data, fill=TRUE)
