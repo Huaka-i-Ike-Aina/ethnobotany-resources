@@ -14,7 +14,7 @@ output: html_document
 
 packages <- c("rvest", "xml2", "dplyr", "purrr", "stringr",
               "rmarkdown", "knitr", "xml2", "data.table", "httr",
-              "leaflet")
+              "leaflet", "geojsonsf", "jsonlite", "sf")
 
 install_if_missing <- function(pkg) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
@@ -46,6 +46,63 @@ leaflet() %>%
   setView(lng = -157.858333, lat = 21.306944, zoom = 10) %>%
   # Add a marker for a specific location (Honolulu)
   addMarkers(lng = -157.858333, lat = 21.306944, popup = "Aloha from Honolulu! 🌺")
+
+```
+
+```{r leaf-ahupuaa-map}
+
+
+# Read GeoJSON as sf object
+ahupuaa_data <- st_read("data/Ahupuaa.geojson")
+raingauge_data <- st_read("data/Rain_Gauges.geojson")
+
+# Calculate centroids for labeling
+centroids <- st_centroid(ahupuaa_data)
+
+# Create map
+map <- leaflet() %>%
+  addTiles() %>%
+  setView(lng = -157.8583, lat = 20.9078, zoom = 7)
+
+# Add ahupuaa polygons
+map <- map %>%
+  addPolygons(
+    data = ahupuaa_data,
+    fillColor = "lightblue",
+    fillOpacity = 0.3,
+    color = "red",
+    weight = 2,
+  )
+
+# Add markers at centroids
+map <- map %>%
+  addMarkers(
+    data = centroids,
+    popup = ~paste0(
+      "<h3>", ahupuaa, "</h3>",
+      "<p><strong>Moku:</strong> ", moku, "</p>",
+      "<p><strong>Mokupuni:</strong> ", mokupuni, "</p>",
+      "<p><strong>Area:</strong> ", gisacres, " ac</p>"
+    ),
+    label = ~ahupuaa
+  )
+# Add raingauge circle markers
+map <- map %>%
+  addCircleMarkers(
+    data = raingauge_data,
+    group = "Raingauges",
+    radius = 8,
+    fillColor = "blue",
+    color = "white",
+    weight = 2,
+    fillOpacity = 0.8,
+    popup = ~paste0(
+      "<h3>", name, "</h3>",
+      "<p><strong>Elevation:</strong> ", elevft, "</p>",
+      "<p>", stationsta, "</p>"
+    ))
+
+map
 
 ```
 
@@ -246,214 +303,41 @@ final_dt[["depth"]] <- rep(2, dim(final_dt)[1])
 
 # Depth 2 Crawler
 
-```{r helpers_scrape, message=FALSE, warning=FALSE}
 
-# Text helpers
-clean_txt <- function(x) {
-  x <- gsub("\u00A0", " ", x)          # NBSP -> space
-  x <- gsub("\\s+", " ", x)
-  stringr::str_squish(x)
-}
-esc_re <- function(x) gsub("([][{}()+*^$|?.\\-\\\\])", "\\\\\\1", x)
+```{r scrape-details-from-finaldt, eval=TRUE}
 
-# Canonical label mapping (extend as needed)
-canon_label <- function(label) {
-  L <- tolower(clean_txt(gsub("[:]+\\s*$", "", label)))
-  patterns <- list(
-    "Hawaiian Name(s)" = "^hawaiian\\s+name(s)?$",
-    "Scientific Name"  = "^scientific\\s+name$|^species$|^binomial$|^taxon$",
-    "Vernacular Name"  = "^vernacular\\s+name(s)?$|^common\\s+name(s)?$|^english\\s+name(s)?$",
-    "Family"           = "^family$",
-    "Status"           = "^status$|^native\\s*status$|^endemic( status)?$",
-    "Part Used"        = "^part(s)?\\s+used$",
-    "Uses"             = "^use(s)?$|^traditional\\s+use(s)?$|^uses(/|\\s+)practices$",
-    "Medicinal"        = "^medicinal$|^medicine$",
-    "Habitat"          = "^habitat$",
-    "Distribution"     = "^distribution$|^location(s)?$|^island(s)?$",
-    "References"       = "^reference(s)?$|^sources?$",
-    "Notes"            = "^note(s)?$|^remarks$"
-  )
-  for (k in names(patterns)) if (grepl(patterns[[k]], L, perl = TRUE)) return(k)
-  # Fallback: keep original label (trimmed)
-  sub(":\\s*$", "", clean_txt(label))
-}
-
-# Extract label/value pairs from a content node
-extract_fields <- function(content_node) {
+# Helper to extract <b>Label</b>: Value pairs from a detail page
+extract_bold_fields <- function(url) {
+  page <- tryCatch(read_html(url), error = function(e) return(NULL))
+  if (is.null(page)) return(list())
+  
+  name_div <- page %>% html_node("div#name")
+  if (is.na(name_div)) return(list())
+  
+  b_nodes <- name_div %>% html_nodes("b")
+  
   fields <- list()
-  addf <- function(label, value) {
-    lbl <- canon_label(label)
-    val <- clean_txt(value)
-    if (!nzchar(lbl) || !nzchar(val)) return(invisible())
-    if (is.null(fields[[lbl]])) fields[[lbl]] <- val
-    else fields[[lbl]] <- paste(fields[[lbl]], val, sep = "\n")
+  for (b in b_nodes) {
+    label <- b %>% html_text(trim=TRUE)
+    value <- b %>% html_nodes(xpath = "following-sibling::text()[1]") %>% html_text(trim=TRUE)
+    value <- sub("^\\s*:\\s*", "", value)
+    fields[[make.names(label)]] <- value
   }
-
-  # 1) Definition lists: <dt>Label</dt><dd>Value</dd>
-  for (dl in rvest::html_elements(content_node, "dl")) {
-    dts <- rvest::html_elements(dl, "dt"); dds <- rvest::html_elements(dl, "dd")
-    n <- min(length(dts), length(dds))
-    for (i in seq_len(n)) addf(rvest::html_text2(dts[[i]]), rvest::html_text2(dds[[i]]))
-  }
-
-  # 2) Tables: assume first cell is label, rest are value
-  for (tbl in rvest::html_elements(content_node, "table")) {
-    for (tr in rvest::html_elements(tbl, "tr")) {
-      cells <- rvest::html_elements(tr, "th, td")
-      if (length(cells) >= 2) {
-        label <- rvest::html_text2(cells[[1]])
-        vals <- vapply(cells[-1], rvest::html_text2, "", USE.NAMES = FALSE)
-        vals <- vals[nzchar(vals)]
-        if (length(vals)) addf(label, paste(vals, collapse = " | "))
-      }
-    }
-  }
-
-  # 3) Bold/strong label at start of paragraph/list item
-  for (parent in rvest::html_elements(content_node, "p, li")) {
-    b <- rvest::html_element(parent, "strong, b")
-    if (!inherits(b, "xml_missing") && length(b) > 0) {
-      label <- clean_txt(rvest::html_text2(b))
-      par_txt <- rvest::html_text2(parent)
-      if (nzchar(label) && nzchar(par_txt)) {
-        pattern <- paste0("^\\s*", esc_re(label), "\\s*:?\\s*")
-        value <- clean_txt(sub(pattern, "", par_txt, perl = TRUE))
-        if (nzchar(value)) addf(label, value)
-      }
-    }
-  }
-
-  # 4) Plain "Label: Value" lines (no bold)
-  known_left <- c("Hawaiian Name", "Hawaiian Name(s)", "Scientific Name", "Vernacular Name",
-                  "Common Name", "English Name", "Family", "Status", "Part Used", "Uses",
-                  "Medicinal", "Habitat", "Distribution", "References", "Notes")
-  left_re <- paste0("^\\s*(", paste(unique(known_left), collapse="|"), ")\\s*:\\s*(.+)$")
-  for (node in rvest::html_elements(content_node, "p, li, div")) {
-    txt <- rvest::html_text2(node)
-    if (!nzchar(txt)) next
-    m <- regexec(left_re, txt, ignore.case = TRUE)
-    rr <- regmatches(txt, m)[[1]]
-    if (length(rr) >= 3) addf(rr[2], rr[3])
-  }
-
-  fields
+  return(fields)
 }
 
-# Choose content container
-choose_content_node <- function(doc, selectors = c("#content","div#content","#main","main","article",".content","#mw-content-text","body")) {
-  for (sel in selectors) {
-    node <- rvest::html_element(doc, sel)
-    if (!inherits(node, "xml_missing") && length(node) > 0) return(node)
-  }
-  rvest::html_element(doc, "body")
-}
+# Use URLs from final_dt
+detail_urls <- final_dt$URL
 
-# Scrape one URL -> one-row data.table (wide)
-scrape_one <- function(url,
-                       ua = "ethnobotany-resources/0.1 (+https://github.com/stacyllyn/ethnobotany-resources)",
-                       timeout_sec = 30) {
-  safe_row <- function(error = NA_character_, status = NA_integer_, title = NA_character_) {
-    data.table(url = url, page_title = title, status = status,
-               fetched_at = Sys.time(), error = error)
-  }
+# Scrape all detail pages (limit for demo, e.g. first 10)
+detail_data <- purrr::map(detail_urls, extract_bold_fields)
 
-  resp <- tryCatch(httr::GET(url, httr::user_agent(ua), httr::timeout(timeout_sec)), error = identity)
-  if (inherits(resp, "error")) return(safe_row(paste("request_error:", resp$message)))
-  status <- httr::status_code(resp)
-  if (status >= 400) return(safe_row(paste("http_status", status), status = status))
+# Convert to data.frame
+details_df <- rbindlist(detail_data, fill=TRUE)
 
-  html_txt <- tryCatch(httr::content(resp, as = "text", encoding = "UTF-8"), error = identity)
-  if (inherits(html_txt, "error") || !nzchar(html_txt)) return(safe_row("empty_response", status = status))
+# Preview
+head(details_df)
 
-  doc <- tryCatch(xml2::read_html(html_txt), error = identity)
-  if (inherits(doc, "error")) return(safe_row("parse_error", status = status))
-
-  title_node <- rvest::html_element(doc, "title")
-  page_title <- if (inherits(title_node, "xml_missing")) NA_character_ else clean_txt(rvest::html_text2(title_node))
-
-  content_node <- choose_content_node(doc)
-  if (inherits(content_node, "xml_missing") || length(content_node) == 0) {
-    return(safe_row("content_not_found", status = status, title = page_title))
-  }
-
-  fields <- extract_fields(content_node)
-
-  cbind(
-    data.table(url = url, page_title = page_title, status = status,
-               fetched_at = Sys.time(), error = NA_character_),
-    as.data.table(as.list(fields), keep.rownames = FALSE)
-  )
-}
-
-# Scrape many URLs
-scrape_many <- function(urls, sleep_bounds = c(0.2, 0.6)) {
-  if (!length(urls)) return(data.table())
-  pb <- txtProgressBar(min = 0, max = length(urls), style = 3)
-  res <- vector("list", length(urls))
-  for (i in seq_along(urls)) {
-    Sys.sleep(runif(1, sleep_bounds[1], sleep_bounds[2]))  # polite delay
-    res[[i]] <- tryCatch(scrape_one(urls[[i]]), error = function(e) {
-      data.table(url = urls[[i]], page_title = NA_character_, status = NA_integer_,
-                 fetched_at = Sys.time(), error = paste("unexpected_error:", e$message))
-    })
-    setTxtProgressBar(pb, i)
-  }
-  close(pb)
-  data.table::rbindlist(res, fill = TRUE, use.names = TRUE)
-}
-
+# Save the details to CSV
+write.csv(details_df, file = "data/bishopmuseum_details.csv", row.names = FALSE)
 ```
-
-
-```{r diagnose_labels_optional, eval=FALSE}
-
-# Optional diagnostics: peek at first-column labels inside common containers for one URL
-u <- "https://data.bishopmuseum.org/ethnobotanydb/ethnobotany.php?b=d&ID=aalii"
-doc <- xml2::read_html(u)
-sels <- c("#content","div#content","#main","main","article",".content","#mw-content-text","body")
-diag <- lapply(sels, function(s) {
-  node <- rvest::html_element(doc, s)
-  if (inherits(node, "xml_missing") || length(node) == 0) return(NULL)
-  rows <- rvest::html_elements(node, "tr")
-  if (!length(rows)) return(NULL)
-  labs <- unlist(lapply(rows, function(tr) {
-    cells <- rvest::html_elements(tr, "th, td")
-    if (length(cells) >= 1) rvest::html_text2(cells[[1]]) else NA_character_
-  }))
-  data.table(selector = s, first_col_labels = unique(na.omit(stringr::str_squish(labs))))
-})
-Filter(Negate(is.null), diag)
-
-```
-
-```{r run_scrape_depth2, message=FALSE, warning=FALSE}
-
-# Assumes you've already run:
-# - setup_deps (packages)
-# - functions chunk (defines clean_txt, canon_label, extract_fields, scrape_one, scrape_many)
-
-stopifnot(exists("final_dt"))
-url_col   <- intersect(names(final_dt), c("url","URL","link","href"))[1]
-depth_col <- intersect(names(final_dt), c("depth","Depth","level","crawl_depth"))[1]
-if (is.na(url_col))   stop("final_dt must have a URL column.")
-if (is.na(depth_col)) stop("final_dt must have a crawl depth column.")
-
-depth2_urls <- unique(na.omit(final_dt[get(depth_col) == 2][[url_col]]))
-message(sprintf("Scraping %d depth-2 URLs …", length(depth2_urls)))
-
-# Execute scraping (polite delays handled in scrape_many/scrape_one)
-depth2_wide <- scrape_many(depth2_urls)
-
-# Optional: write results
-# data.table::fwrite(depth2_wide, "data/depth2_wide.csv")
-
-# Quick summary of extracted fields
-found_cols <- setdiff(names(depth2_wide), c("url","page_title","status","fetched_at","error"))
-message(sprintf("Extracted %d distinct field labels.", length(found_cols)))
-print(sort(found_cols))
-
-depth2_wide
-
-```
-
-
