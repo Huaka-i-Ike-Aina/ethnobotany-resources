@@ -1,0 +1,343 @@
+---
+
+output: html_document
+
+---
+
+# A note on dependencies
+
++ Leaflet requires installing external dependencies
+  + See https://rspatial.github.io/terra/
+
+
+```{r, include = FALSE}
+
+packages <- c("rvest", "xml2", "dplyr", "purrr", "stringr",
+              "rmarkdown", "knitr", "xml2", "data.table", "httr",
+              "leaflet", "geojsonsf", "jsonlite", "sf")
+
+install_if_missing <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+}
+
+invisible(lapply(packages, install_if_missing))
+invisible(lapply(packages, library, character.only = TRUE))
+
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+
+```
+	
+
+
+# DEMO: Leaflet map
+
+```{r leaf-map}
+
+# Create a leaflet map widget
+leaflet() %>%
+  # Add default OpenStreetMap tiles to the map
+  addTiles() %>%
+  # Set the initial view of the map
+  setView(lng = -157.858333, lat = 21.306944, zoom = 10) %>%
+  # Add a marker for a specific location (Honolulu)
+  addMarkers(lng = -157.858333, lat = 21.306944, popup = "Aloha from Honolulu! 🌺")
+
+```
+
+```{r leaf-ahupuaa-map}
+
+
+# Read GeoJSON as sf object
+ahupuaa_data <- st_read("data/Ahupuaa.geojson")
+raingauge_data <- st_read("data/Rain_Gauges.geojson")
+
+# Calculate centroids for labeling
+centroids <- st_centroid(ahupuaa_data)
+
+# Create map
+map <- leaflet() %>%
+  addTiles() %>%
+  setView(lng = -157.8583, lat = 20.9078, zoom = 7)
+
+# Add ahupuaa polygons
+map <- map %>%
+  addPolygons(
+    data = ahupuaa_data,
+    fillColor = "lightblue",
+    fillOpacity = 0.3,
+    color = "red",
+    weight = 2,
+  )
+
+# Add markers at centroids
+map <- map %>%
+  addMarkers(
+    data = centroids,
+    popup = ~paste0(
+      "<h3>", ahupuaa, "</h3>",
+      "<p><strong>Moku:</strong> ", moku, "</p>",
+      "<p><strong>Mokupuni:</strong> ", mokupuni, "</p>",
+      "<p><strong>Area:</strong> ", gisacres, " ac</p>"
+    ),
+    label = ~ahupuaa
+  )
+# Add raingauge circle markers
+map <- map %>%
+  addCircleMarkers(
+    data = raingauge_data,
+    group = "Raingauges",
+    radius = 8,
+    fillColor = "blue",
+    color = "white",
+    weight = 2,
+    fillOpacity = 0.8,
+    popup = ~paste0(
+      "<h3>", name, "</h3>",
+      "<p><strong>Elevation:</strong> ", elevft, "</p>",
+      "<p>", stationsta, "</p>"
+    ))
+
+map
+
+```
+
+# Scraping BM-EB
+
+```{r scrape-bmeb}
+
+# --- Install required packages only if missing ---
+
+
+# --- Define the URL ---
+url <- "https://data.bishopmuseum.org/ethnobotanydb/ethnobotany.php?b=list&o=1"
+
+# --- Read the HTML content ---
+page <- read_html(url)
+
+# --- Extract all <table> elements ---
+tables <- page %>% html_nodes("table")
+
+# --- Check how many tables are found ---
+length(tables)
+
+# --- Convert the first table to a data frame ---
+ethno_table <- tables[[1]] %>% html_table(fill = TRUE)
+
+# --- Preview the data ---
+glimpse(ethno_table)
+
+# Optional: View first rows
+head(ethno_table)
+
+# --- Create 'data' directory if it doesn't exist ---
+if (!dir.exists("data")) {
+  dir.create("data")
+}
+
+# --- Save the table as CSV in the 'data' directory ---
+write.csv(ethno_table, file = "data/ethno_table.csv", row.names = FALSE)
+
+
+```
+
+
+## Display BM EB Table
+
+```{r bmeb-table}
+
+bmeb <- read.csv("data/ethno_table.csv")
+
+kable(bmeb, caption = "Ethnobotany plants in Bishop Museum")
+
+
+```
+
+# Webcrawler
+
+Coded with assistance from ChatGPT. 
+
+Currently should have the following functionality: 
+
+* Scrapes all pages with pagination,
+* Pulls all depth-2 details,
+* Normalizes them into a single `data.table`,
+* Polite throttling included, and
+* Can resume if interrupted.
+
+```{r d1crawl, eval = TRUE}
+
+                                        # Base URL (pagination placeholder)
+base_url_template <- "https://data.bishopmuseum.org/ethnobotanydb/ethnobotany.php?b=list&o=%d"
+
+                                        # Output files for resume
+depth1_file <- "data/ethnobotany_depth1_progress.csv"
+final_file  <- "data/ethnobotany_full_normalized.csv"
+
+                                        # ---- Step 1: Load existing depth-1 data if resuming ----
+if (file.exists(depth1_file)) {
+    depth1_dt <- fread(depth1_file)
+    message("Resuming with ", nrow(depth1_dt), " depth-1 rows already scraped.")
+} else {
+    depth1_dt <- data.table()
+}
+
+                                        # ---- Step 2: Scrape depth-1 pages ----
+scrape_depth1_page <- function(page_number) {
+    url <- sprintf(base_url_template, page_number)
+    message("Scraping depth-1 page: ", url)
+
+    page <- tryCatch(read_html(url), error = function(e) return(NULL))
+    if (is.null(page)) return(NULL)
+
+    tbl_node <- page %>% html_node("table")
+    if (is.na(tbl_node) || length(tbl_node) == 0) return(NULL)
+
+    main_table <- tbl_node %>% html_table(fill = TRUE)
+    if (nrow(main_table) == 0) return(NULL)
+
+    dt <- as.data.table(main_table)
+    setnames(dt, make.names(names(dt), unique = TRUE))
+
+                                        # Hawaiian Name links
+    hawaiian_nodes <- page %>%
+        html_nodes("table tr td:nth-child(1) a")
+
+    hawaiian_links <- hawaiian_nodes %>%
+        html_attr("href") %>%
+        url_absolute(url)
+
+    dt[, Detail_URL := hawaiian_links]
+
+    Sys.sleep(runif(1, 1, 3))  # polite random pause
+    return(dt)
+}
+
+                                        # If no depth-1 data yet, start scraping from page 1
+if (nrow(depth1_dt) == 0) {
+    all_depth1 <- list()
+    page_number <- 1
+
+    repeat {
+        dt <- scrape_depth1_page(page_number)
+        if (is.null(dt)) break
+        all_depth1[[length(all_depth1) + 1]] <- dt
+        depth1_dt <- rbindlist(all_depth1, fill = TRUE)
+        fwrite(depth1_dt, depth1_file)  # save progress
+        page_number <- page_number + 1
+    }
+}
+
+                                        # ---- Step 3: Scrape depth-2 detail pages ----
+scrape_detail_page <- function(url) {
+    message("   Depth-2: ", url)
+
+    page <- tryCatch(read_html(url), error = function(e) return(NULL))
+    if (is.null(page)) return(list())
+
+    detail_tables <- page %>%
+        html_nodes("table") %>%
+        html_table(fill = TRUE)
+
+    if (length(detail_tables) == 0) return(list())
+
+    detail_df <- detail_tables[[1]]
+
+    if (ncol(detail_df) >= 2) {
+        labels <- str_trim(detail_df[[1]])
+        values <- str_trim(detail_df[[2]])
+        names(values) <- make.names(labels, unique = TRUE)
+        values <- as.list(values)
+    } else {
+        values <- list()
+    }
+
+    Sys.sleep(runif(1, 1, 3))  # polite random pause
+    return(values)
+}
+
+                                        # ---- Step 4: Resume-aware depth-2 scraping ----
+if (file.exists(final_file)) {
+    final_dt <- fread(final_file)
+    scraped_urls <- unique(final_dt$Detail_URL)
+} else {
+    final_dt <- NULL
+    scraped_urls <- character()
+}
+
+                                        # Filter only URLs we haven't scraped yet
+pending_urls <- setdiff(depth1_dt$Detail_URL, scraped_urls)
+message("Depth-2 pages remaining: ", length(pending_urls))
+
+                                        # Scrape only pending detail pages
+detail_list <- map(pending_urls, scrape_detail_page)
+
+                                        # Convert to data.table
+details_dt <- rbindlist(detail_list, fill = TRUE)
+
+                                        # Match them back to depth1 rows
+new_data <- depth1_dt[Detail_URL %in% pending_urls]
+final_batch <- cbind(new_data, details_dt)
+
+                                        # Append to final dataset
+if (!is.null(final_dt)) {
+    final_dt <- rbindlist(list(final_dt, final_batch), fill = TRUE)
+} else {
+    final_dt <- final_batch
+}
+
+
+                                        # Save progress
+fwrite(final_dt, final_file)
+
+                                        # Prep final_dt for depth 2 crawling
+colnames(final_dt)[grepl("URL", colnames(final_dt))] <- "URL"
+final_dt[["depth"]] <- rep(2, dim(final_dt)[1])
+
+```
+
+
+# Depth 2 Crawler
+
+
+```{r scrape-details-from-finaldt, eval=TRUE}
+
+# Helper to extract <b>Label</b>: Value pairs from a detail page
+extract_bold_fields <- function(url) {
+  page <- tryCatch(read_html(url), error = function(e) return(NULL))
+  if (is.null(page)) return(list())
+  
+  name_div <- page %>% html_node("div#name")
+  if (is.na(name_div)) return(list())
+  
+  b_nodes <- name_div %>% html_nodes("b")
+  
+  fields <- list()
+  for (b in b_nodes) {
+    label <- b %>% html_text(trim=TRUE)
+    value <- b %>% html_nodes(xpath = "following-sibling::text()[1]") %>% html_text(trim=TRUE)
+    value <- sub("^\\s*:\\s*", "", value)
+    fields[[make.names(label)]] <- value
+  }
+  return(fields)
+}
+
+# Use URLs from final_dt
+detail_urls <- final_dt$URL
+
+# Scrape all detail pages (limit for demo, e.g. first 10)
+detail_data <- purrr::map(detail_urls, extract_bold_fields)
+
+# Convert to data.frame
+details_df <- rbindlist(detail_data, fill=TRUE)
+
+# Preview
+head(details_df)
+
+# Save the details to CSV
+write.csv(details_df, file = "data/bishopmuseum_details.csv", row.names = FALSE)
+```
