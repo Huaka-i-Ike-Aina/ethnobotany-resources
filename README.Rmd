@@ -2,8 +2,6 @@
 output: github_document
 ---
 
-Making some changes. Making more changes. And saving. 
-
 <!-- README.md is generated from README.Rmd. Please edit that file -->
 
 ```{r, include = FALSE}
@@ -18,24 +16,22 @@ knitr::opts_chunk$set(
 <!-- badges: start -->
 <!-- badges: end -->
 
-The goal of ethnobotany-resources is to ...
+The goal of ethnobotany-resources is to collect datasets, field notes, and literature references for plants used in traditional medicine and cultural
+practices.
 
-What is special about using `README.Rmd` instead of just `README.md`? You can include R chunks like so:
-
-```{r cars}
-summary(cars)
-```
-
-You'll still need to render `README.Rmd` regularly, to keep `README.md` up-to-date.
-
-You can also embed plots, for example:
-
-```{r pressure, echo = TRUE}
-plot(pressure)
-```
-
-In that case, don't forget to commit and push the resulting figure files, so they display on GitHub.
 # Ethnobotanical Resources
 
 This repository collects datasets, field notes, and literature references  for plants used in traditional medicine and cultural practices.
 
+```{r echo=FALSE, message=FALSE}
+
+library(knitr)
+
+# Load the data from your repo
+databases <- read.csv("data/ethnobotanical_databases.csv")
+
+# Render as a black-and-white Markdown table
+kable(databases, format = "markdown", align = "l")
+knitr::opts_knit$set(root.dir = "C:/Users/Stacy/OneDrive/Desktop/ethnobotany-resources2")
+
+```

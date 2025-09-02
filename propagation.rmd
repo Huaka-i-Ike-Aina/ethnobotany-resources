@@ -1,0 +1,45 @@
+---
+title: "Merge Bishop Museum + CTAHR Plant Data"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+packages <- c("rvest", "readr", "xml2", "dplyr", "purrr", "stringr",
+              "rmarkdown", "knitr", "xml2", "data.table", "httr", "fuzzyjoin")
+
+install_if_missing <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+}
+
+invisible(lapply(packages, install_if_missing))
+invisible(lapply(packages, library, character.only = TRUE))
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+
+```
+```{r scrape-ctahr}
+url <- "https://www.ctahr.hawaii.edu/hawnprop/botlist.htm"
+page <- read_html(url)
+
+# Get all <li> nodes
+nodes <- page %>% html_nodes("a")
+
+filtered_links <- nodes[!grepl("#", html_attr(nodes, "href"))]
+plant_links <- filtered_links[grepl("plants", html_attr(filtered_links, "href"))]
+plant_links
+
+domain <- "https://www.ctahr.hawaii.edu/"
+
+df <- tibble(
+    url = paste0(domain, html_attr(plant_links, "href")),
+    scientific_name = plant_links %>% html_node("i") %>% html_text() %>% trimws()
+)
+
+
+write.csv(df, "data/plant_propagation.csv", row.names = FALSE)
+```
