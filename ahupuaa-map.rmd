@@ -1,0 +1,393 @@
+---
+
+output: html_document
+
+---
+
+# A note on dependencies
+
++ Leaflet requires installing external dependencies
+  + See https://rspatial.github.io/terra/
+
+
+```{r, include = FALSE}
+
+packages <- c("rvest", "xml2", "dplyr", "purrr", "stringr",
+              "rmarkdown", "knitr", "xml2", "data.table", "httr",
+              "leaflet", "geojsonsf", "jsonlite", "sf", "geojsonio")
+
+install_if_missing <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+}
+
+invisible(lapply(packages, install_if_missing))
+invisible(lapply(packages, library, character.only = TRUE))
+
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+
+```
+	
+
+# Simple Leaflet Map
+```{r leaf-map}
+
+# Create a leaflet map widget
+leaflet() %>%
+  # Add default OpenStreetMap tiles to the map
+  addTiles() %>%
+  # Set the initial view of the map
+  setView(lng = -157.858333, lat = 21.306944, zoom = 10) %>%
+  # Add a marker for a specific location (Honolulu)
+  addMarkers(lng = -157.858333, lat = 21.306944, popup = "Aloha from Honolulu! 🌺")
+
+```
+
+# Leaflet Ahupuaa Map with details
+```{r leaf-ahupuaa-map}
+
+
+# Read GeoJSON as sf object
+ahupuaa_data <- st_read("data/Ahupuaa.geojson")
+raingauge_data <- st_read("data/Rain_Gauges.geojson")
+
+# Calculate centroids for labeling
+centroids <- st_centroid(ahupuaa_data)
+
+# Create map
+map <- leaflet() %>%
+  addTiles() %>%
+  setView(lng = -157.8583, lat = 20.9078, zoom = 7)
+
+# Add ahupuaa polygons
+map <- map %>%
+  addPolygons(
+    data = ahupuaa_data,
+    label = ~ahupuaa,
+    group = "Ahupuaa",
+    labelOptions = labelOptions(noHide = FALSE, textOnly = TRUE, direction = "center", offset = c(0,0), style = list("color" = "darkgreen", "font-weight" = "bold", "font-size" = "12px")),  
+    fillColor = "lightblue",
+    fillOpacity = 0.3,
+    color = "navy",
+    weight = 2,
+  )
+
+# Add markers at centroids
+map <- map %>%
+  addMarkers(
+    data = centroids,
+    popup = ~paste0(
+      "<h3>", ahupuaa, "</h3>",
+      "<p><strong>Moku:</strong> ", moku, "</p>",
+      "<p><strong>Mokupuni:</strong> ", mokupuni, "</p>",
+      "<p><strong>Area:</strong> ", gisacres, " ac</p>"
+    ),
+    label = ~ahupuaa,
+    clusterOptions = markerClusterOptions()
+  )
+map
+
+```
+
+# Ahupuaa map with multiple layers
+```{r leaf-ahupuaa-map-setup}
+
+
+# Read GeoJSON as sf object
+ahupuaa_data <- st_read("data/Ahupuaa.geojson")
+raingauge_data <- st_read("data/Rain_Gauges.geojson")
+aguse_2015_data <- st_read("data/Agricultural_Land_Use_-_2015_Baseline.geojson") # polygons
+aguse_2020_data <- st_read("data/Agricultural_Land_Use_-_2020_Update.geojson")
+marine_areas_data <- st_read("data/Marine_Managed_Areas_(DAR).geojson" )
+annual_rainfall_data <- st_read("data/Annual_Rainfall_(in).geojson")
+threatened_endangered_plants_data <- st_read("data/Threatened-Endangered_Plants.geojson")
+
+```
+
+```{r leaf-ahupuaa-map-advanced}
+
+# Calculate centroids for labeling
+centroids <- st_centroid(ahupuaa_data)
+
+# Create map
+map <- leaflet() %>%
+  addTiles() %>%
+  setView(lng = -157.8583, lat = 20.9078, zoom = 7)
+
+
+# Function to create adjacency-based coloring
+color_adjacent_polygons <- function(polygons_sf, num_colors = 4) {
+  
+  # Create adjacency matrix
+  adjacency <- st_touches(polygons_sf, sparse = FALSE)
+  
+  # Initialize colors
+  n_polygons <- nrow(polygons_sf)
+  colors <- rep(NA, n_polygons)
+  color_palette <- RColorBrewer::brewer.pal(num_colors, "Set3")
+  
+  # Simple greedy coloring algorithm
+  for (i in 1:n_polygons) {
+    # Get neighbors
+    neighbors <- which(adjacency[i, ])
+    
+    # Get colors already used by neighbors
+    used_colors <- unique(colors[neighbors])
+    used_colors <- used_colors[!is.na(used_colors)]
+    
+    # Find first available color
+    available_colors <- setdiff(1:num_colors, used_colors)
+    
+    if (length(available_colors) > 0) {
+      colors[i] <- available_colors[1]
+    } else {
+      # If no color available, use first color (fallback)
+      colors[i] <- 1
+    }
+  }
+  
+  # Add colors to the sf object
+  polygons_sf$color_id <- colors
+  polygons_sf$fill_color <- color_palette[colors]
+  
+  return(polygons_sf)
+}
+
+# Apply coloring
+colored_ahupuaa <- color_adjacent_polygons(ahupuaa_data, num_colors = 5)
+
+
+# Add ahupuaa polygons
+map <- map %>%
+  addPolygons(
+    data = colored_ahupuaa,
+    label = ~ahupuaa,
+    group = "Ahupuaa",
+    labelOptions = labelOptions(noHide = FALSE, textOnly = TRUE, direction = "center", offset = c(0,0), style = list("color" = "darkgreen", "font-weight" = "bold", "font-size" = "12px")),  
+    fillColor = ~fill_color,
+    fillOpacity = 0.1,
+    color = ~fill_color,
+    stroke = TRUE,
+    weight = 3,
+  )
+
+# Add markers at centroids
+map <- map %>%
+  addMarkers(
+    data = centroids,
+    group = "Ahupuaa Details",
+    popup = ~paste0(
+      "<h3>", ahupuaa, "</h3>",
+      "<p><strong>Moku:</strong> ", moku, "</p>",
+      "<p><strong>Mokupuni:</strong> ", mokupuni, "</p>",
+      "<p><strong>Area:</strong> ", gisacres, " ac</p>"
+    ),
+    label = ~ahupuaa,
+    clusterOptions = markerClusterOptions()
+  )
+# Add raingauge circle markers
+map <- map %>%
+  addCircleMarkers(
+    data = raingauge_data,
+    group = "Raingauges",
+    radius = 8,
+    fillColor = "blue",
+    color = "white",
+    weight = 2,
+    fillOpacity = 0.8,
+    popup = ~paste0(
+      "<h3>", name, "</h3>",
+      "<p><strong>Elevation:</strong> ", elevft, "</p>",
+      "<p>", stationsta, "</p>"
+    ))
+
+map <- map %>% addPolygons(
+    data = aguse_2015_data,
+    group = "Ag Use 2015",
+    fillColor = "orange",
+    fillOpacity = 0.4,
+    color = "darkorange",
+    weight = 1,
+    popup = ~paste0(
+      "<h3>Ag Use 2015</h3>",
+        "<p><strong>Type:</strong> ", cropcatego, "</p>",
+        "<p><strong>Area:</strong> ", acreage, "</p>"
+    )
+) 
+map <- map %>% 
+    addPolygons(
+        data = aguse_2020_data,
+        group = "Ag Use 2020",
+        fillColor = "yellow",
+        fillOpacity = 0.4,
+        color = "gold",
+        weight = 1,
+        popup = ~paste0(
+        "<h3>Ag Use 2020</h3>",
+        "<p><strong>Type:</strong> ", crops_2020, "</p>",
+        "<p><strong>Area:</strong> ", acreage, "</p>"
+        )
+    ) 
+map <- map %>% addPolygons(
+        data = marine_areas_data,
+        group = "Marine Areas",
+        fillColor = "lightgreen",
+        fillOpacity = 0.4,
+        color = "green",
+        weight = 1,
+        popup = ~paste0(
+        "<h3>", site_label,"</h3>",
+        "<p><strong>Designation:</strong> ", mma_designation, "</p>",
+        "<p><strong>Permitted:</strong> ", permitted, "</p>",
+        "<p><strong>Prohibited:</strong> ", prohibited, "</p>"
+        )
+    )
+
+# Threatened & Endangered plant density
+te_density_levels <- c("O", "OL", "L", "M", "H", "VH")
+te_density_labels = c("O" = "Little or no T&E species",
+    "L" = "Low concentration of T&E species",
+    "M" = "Medium concentration of T&E species",
+    "H" = "High concentration of T&E species",
+    "VH" = "Very high concentration of T&E species",
+    "OL" = "O in cane fields, L in gullies and coastal areas")
+# Convert density to ordered factor
+threatened_endangered_plants_data <- threatened_endangered_plants_data %>%
+  mutate(density_factor = factor(density, levels = te_density_levels, ordered = TRUE))
+
+# Create color palette (light to dark progression)
+density_colors <- c(
+  "O" = "#ffffcc",    # Very light yellow (almost white)
+  "OL" = "#c7e9b4",   # Light yellow-green  
+  "L" = "#7fcdbb",    # Light blue-green
+  "M" = "#41b6c4",    # Medium blue
+  "H" = "#2c7fb8",    # Dark blue
+  "VH" = "#253494"    # Very dark blue
+)
+
+# Create color palette function
+density_pal <- colorFactor(
+  palette = density_colors,
+  domain = te_density_levels,
+  ordered = TRUE
+)
+
+map <- map %>% addPolygons(
+        data = threatened_endangered_plants_data,
+        group = "Threatened/Endangered Plants",
+        fillColor = ~density_pal(density),
+        color = "black",
+        weight = 1,
+        fillOpacity = 0.8,
+        popup = ~paste0(
+        "<p><strong>Density:</strong> ", te_density_labels[density], "</p>")
+    )
+
+# Create color palette for precipitation values
+precip_pal <- colorNumeric(
+  palette = "Blues",
+  domain = annual_rainfall_data$contour,
+  reverse = FALSE  # Higher values = darker blue
+)
+
+# Add isohyet lines
+map <- map %>%
+  addPolylines(
+    group = "Annual Rainfall (in)",
+    color = ~precip_pal(contour),
+    data = annual_rainfall_data,
+    weight = 2,
+    opacity = 0.8,
+    popup = ~paste("<b>Isohyet Line</b><br>",
+                   "Precipitation:", contour, "in<br>",
+                   "Line Length:", round(st_lengthshape, 1), "m")
+  )
+
+# Add legend
+# map <- map %>%
+#   addLegend(
+#     pal = precip_pal,
+#     group="Annual Rainfall (in)",
+#     values = ~contour,
+#     title = "Precipitation<br>(in)",
+#     position = "bottomright"
+#   )
+
+# Add layer control
+map <- map %>% addLayersControl(
+    baseGroups = c("OpenStreetMap", "CartoDB"),
+    overlayGroups = c("Raingauges", "Ahupuaa Details", "Annual Rainfall (in)", "Ag Use 2015", "Ag Use 2020", "Marine Areas", "Threatened/Endangered Plants"), #, "Marine Areas", "Threatened/Endangered Plants"
+    options = layersControlOptions(collapsed = FALSE)
+  )
+map
+
+```
+
+```{r olelo-normalizer-function}
+# apply the following text transformations to normalize olelo Hawaii text
+# - lowercase, remove diacritics, remove punctuation, trim whitespace
+# @param text text vector to normalize
+# @param options optional list of transformations
+olelo_normalizer <- function(text, options = NULL) {
+    text <- tolower(text)
+    text <- iconv(text, from = "UTF-8", to = "ASCII//TRANSLIT")
+    text <- gsub("[[:punct:]]", " ", text)
+    text <- gsub("\\s+", " ", text)
+    text <- trimws(text)
+    if (!is.null(options) && "remove_spaces" %in% options) {
+        text <- gsub(" ", "", text) 
+    }
+    return(text)
+}
+
+test1 <- c("Hālau", "Mānoa", "ʻAiea", "Kāneʻohe", "Lānaʻi", "Pūpūkea")
+result <- olelo_normalizer(test1, options = c("remove_spaces"))
+result
+```
+
+```{r ahupuaa-name-collisions}
+geojson_sf <- st_read("data/Ahupuaa.geojson")
+# All properties are now in the data frame (excluding geometry)
+properties_df <- st_drop_geometry(geojson_sf)
+# Function to get unique values for specified properties
+get_unique_for_properties <- function(df, property_list = NULL) {
+  # If no properties specified, use all properties
+  if (is.null(property_list)) {
+    property_list <- names(df)
+  }
+  
+  # Check if specified properties exist in the dataframe
+  missing_props <- setdiff(property_list, names(df))
+  if (length(missing_props) > 0) {
+    warning("Properties not found in data: ", paste(missing_props, collapse = ", "))
+  }
+  
+  # Filter to only existing properties
+  existing_props <- intersect(property_list, names(df))
+  
+  if (length(existing_props) == 0) {
+    stop("None of the specified properties exist in the data")
+  }
+  
+  # Get unique values for each specified property
+  unique_by_property <- lapply(df[existing_props], function(x) unique(x[!is.na(x)]))
+  
+  return(unique_by_property)
+}
+
+# Example usage:
+# Specify the properties you want to analyze
+properties_to_analyze <- c("ahupuaa", "moku", "mokupuni", "other")
+
+# Get unique values for specified properties
+unique_results <- get_unique_for_properties(properties_df, properties_to_analyze)
+
+# View structure
+unique_results
+
+```
+
