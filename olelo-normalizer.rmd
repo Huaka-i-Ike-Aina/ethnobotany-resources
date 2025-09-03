@@ -1,0 +1,116 @@
+---
+
+output: html_document
+
+---
+
+# A note on dependencies
+
++ Leaflet requires installing external dependencies
+  + See https://rspatial.github.io/terra/
+
+
+```{r, include = FALSE}
+
+packages <- c("rvest", "xml2", "dplyr", "purrr", "stringr",
+              "rmarkdown", "knitr", "xml2", "data.table", "httr",
+              "leaflet", "geojsonsf", "jsonlite", "sf", "geojsonio")
+
+install_if_missing <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+}
+
+invisible(lapply(packages, install_if_missing))
+invisible(lapply(packages, library, character.only = TRUE))
+
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+
+```
+	
+```{r olelo-normalizer-function}
+# apply the following text transformations to normalize olelo Hawaii text
+# - lowercase, remove diacritics, remove punctuation, trim whitespace
+# @param text text vector to normalize
+# @param options optional list of transformations
+olelo_normalizer <- function(text, options = NULL) {
+    text <- tolower(text)
+    text <- iconv(text, from = "UTF-8", to = "ASCII//TRANSLIT")
+    text <- gsub("[[:punct:]]", " ", text)
+    text <- gsub("\\s+", " ", text)
+    text <- trimws(text)
+    if (!is.null(options) && "remove_spaces" %in% options) {
+        text <- gsub(" ", "", text) 
+    }
+    return(text)
+}
+
+test1 <- c("Hālau", "Mānoa", "ʻAiea", "Kāneʻohe", "Lānaʻi", "Pūpūkea")
+result <- olelo_normalizer(test1, options = c("remove_spaces"))
+result
+
+geojson_sf <- st_read("data/Ahupuaa.geojson")
+# All properties are now in the data frame (excluding geometry)
+properties_df <- st_drop_geometry(geojson_sf)
+
+count_unique_values <- function(df, text_columns) {
+    sapply(df[text_columns], function(x) length(unique(x[!is.na(x)])))
+}
+
+text_cols <- c("ahupuaa", "moku", "mokupuni", "other")  # Replace with your column names
+
+# Count unique values before processing
+unique_before <- count_unique_values(properties_df, text_cols)
+
+# Apply text cleaning to specified columns
+geo_df_clean <- properties_df
+geo_df_clean[text_cols] <- lapply(geo_df_clean[text_cols], olelo_normalizer, options = c("remove_spaces"))
+
+# Count unique values after processing
+unique_after <- count_unique_values(geo_df_clean, text_cols)
+
+# Create comparison dataframe
+comparison <- data.frame(
+  Column = names(unique_before),
+  Before = unique_before,
+  After = unique_after,
+  Difference = unique_before - unique_after,
+  Percent_Reduction = round((unique_before - unique_after) / unique_before * 100, 2)
+)
+
+analyze_merged_values <- function(original, cleaned, col_name) {
+  # Find values that became identical after cleaning
+  df_temp <- data.frame(
+    original = original,
+    cleaned = cleaned,
+    stringsAsFactors = FALSE
+  )
+  
+  # Group by cleaned values to see what got merged
+  merged_groups <- df_temp %>%
+    group_by(cleaned) %>%
+    summarise(original_values = list(unique(original)), .groups = 'drop') %>%
+    filter(lengths(original_values) > 1)
+  
+  if(nrow(merged_groups) > 0) {
+    cat("Column:", col_name, "\n")
+    cat("Values that were merged:\n")
+    for(i in 1:nrow(merged_groups)) {
+      cat("  '", merged_groups$cleaned[i], "' <- ", 
+          paste(merged_groups$original_values[[i]], collapse = ", "), "\n")
+    }
+    cat("\n")
+  }
+}
+
+# Apply to each text column
+for(col in text_cols) {
+  analyze_merged_values(properties_df[[col]], geo_df_clean[[col]], col)
+}
+comparison
+```
+
