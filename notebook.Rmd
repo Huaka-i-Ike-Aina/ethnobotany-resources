@@ -6,19 +6,24 @@ output: html_document
 
 # A note on dependencies
 
+Whatever you want.
+
 ```{r, include = FALSE}
 
 packages <- c("rvest", "xml2", "dplyr", "purrr", "stringr",
-              "rmarkdown", "knitr", "xml2", "data.table", "httr")
+              "rmarkdown", "knitr", "xml2", "data.table", "httr",
+              "readr")
 
 install_if_missing <- function(pkg) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
-    install.packages(pkg)
+    install.packages(pkg, repos='http://cran.us.r-project.org')
   }
 }
 
 invisible(lapply(packages, install_if_missing))
 invisible(lapply(packages, library, character.only = TRUE))
+
+source("R/scraping.R")
 
 knitr::opts_chunk$set(
   collapse = TRUE,
@@ -27,6 +32,54 @@ knitr::opts_chunk$set(
 
 ```
 	
+# Scraping NativePlants
+
+```{r}
+
+# Scrape nativeplants.hawaii.edu and write one CSV row per plant.
+                                        # Each row has an identifier (genus_species) plus one column per subheading.
+
+
+base <- "http://nativeplants.hawaii.edu/"
+
+plant_urls <- crawl_plant_urls() 
+
+if (length(plant_urls) == 0) {
+    pg0 <- tryCatch(read_html(base), error = function(e) NULL)
+    if (!is.null(pg0)) {
+        links0 <- html_elements(pg0, 
+                                "a[href]") |> html_attr("href") |> xml2::url_absolute(base) |> unique()
+        plant_urls <- links0[str_detect(links0, "/plant(s)?/view/")] |> unique()
+    }
+}
+
+plants <- purrr::map_dfr(
+  plant_urls,
+  ~{ Sys.sleep(0.3); parse_plant_page(.x) },
+  .progress = TRUE
+)
+
+all_keys <- plants$data |> discard(is.null) |> map(names) |> unlist() |> unique()
+
+wide <- plants |>
+    mutate(data = map(data, ~ .x %||% list())) |>
+    mutate(tmp = map(data, ~ { z <- setNames(rep(NA_character_, length(all_keys)), all_keys); for (k in names(.x)) z[[k]] <- .x[[k]]; z })) |>
+    select(-data) |>
+    tidyr::unnest_wider(tmp)
+
+wide <- wide |>
+    mutate(identifier = if_else(is.na(identifier) | identifier == "",
+                                str_to_lower(str_replace_all(basename(gsub("/+$","", url)), "[^A-Za-z_]", "")),
+                                identifier)) |>
+    distinct(identifier, .keep_all = TRUE)
+
+
+write_csv(wide, "data/hawaii_native_plants.csv")
+
+
+```
+
+
 
 # Scraping BM-EB
 
